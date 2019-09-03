@@ -12843,8 +12843,133 @@ TR::Node *su2dSimplifier(TR::Node * node, TR::Block * block, TR::Simplifier * s)
 
    return node;
    }
+TR::Node* cannotTransformOp(bool canTransformAdd, bool canTransformSub, TR::Node* node, TR::Simplifier* s)
+   {
+   if (!(canTransformAdd || canTransformSub))
+      {
+      if (s->trace())
+         traceMsg(s->comp(),
+                  "\nEliminating add/sub under order compare node n%dn failed due to overflow\n",
+                  node->getGlobalIndex());
 
+      return NULL;
+      }
+   return node;
+   }
+TR::Node* signedAndUnsignedHandler(TR::Node* opNode,TR::Node* secondChild,TR::Simplifier* s,TR::Node* node,bool isSigned, bool isAddOp, bool isSubOp)
+   {
+   
+   TR::Node* newConstNode = TR::Node::create(secondChild, secondChild->getOpCodeValue(), 0);    
+   
+   TR::DataType DataType = secondChild->getDataType();
+   if(!isSigned)
+     {
+     uint64_t oldUConst1 = 0, oldUConst2 = 0, unsignedMax = 0;
+     switch(DataType)
+        {
+        case TR::Int8:
+           oldUConst1 = opNode->getSecondChild()->getUnsignedByte();
+           oldUConst2 = secondChild->getUnsignedByte();
+           unsignedMax = TR::getMaxUnsigned<TR::Int8>();
+           break;
+        case TR::Int16:
+           oldUConst1 = opNode->getSecondChild()->getUnsignedShortInt();
+           oldUConst2 = secondChild->getUnsignedShortInt();
+           unsignedMax = TR::getMaxUnsigned<TR::Int16>();
+           break;
+        case TR::Int32:
+           oldUConst1 = opNode->getSecondChild()->getUnsignedInt();
+           oldUConst2 = secondChild->getUnsignedInt();
+           unsignedMax = TR::getMaxUnsigned<TR::Int32>();
+           break;
+        case TR::Int64:
+           oldUConst1 = opNode->getSecondChild()->getUnsignedLongInt();
+           oldUConst2 = secondChild->getUnsignedLongInt();
+           unsignedMax = TR::getMaxUnsigned<TR::Int64>();
+           break;
+        default:
+           if (s->trace())
+              traceMsg(s->comp(),
+                   "\nEliminating add/sub under compare node n%dn failed due to opcode data type\n",
+		   node->getGlobalIndex());
 
+           TR_ASSERT_FATAL(false, "\nEliminating add/sub under compare node n%dn failed due to opcode data type\n" );
+           break;
+        }
+     bool canTransformAdd = isAddOp
+              && !(oldUConst2 < oldUConst1);
+
+     bool canTransformSub = isSubOp
+              && !(oldUConst2 > unsignedMax - oldUConst1);
+
+     if(cannotTransformOp( canTransformAdd, canTransformSub, node, s)==NULL)
+	return NULL;
+
+     uint64_t newUConst = 0;
+     newUConst = isAddOp ? (oldUConst2 - oldUConst1) : (oldUConst2 + oldUConst1);
+     newConstNode->setUnsignedLongInt(newUConst);
+
+     }
+   else
+     {
+     int64_t signedMax = 0, signedMin = 0, oldConst1 = 0, oldConst2 = 0;
+     switch(DataType)
+       {
+       case TR::Int8:
+       	  oldConst1 = opNode->getSecondChild()->getByte();
+          oldConst2 = secondChild->getByte();
+          signedMax = TR::getMaxSigned<TR::Int8>();
+          signedMin = TR::getMinSigned<TR::Int8>();
+ 	  break;
+       case TR::Int16:
+	  oldConst1 = opNode->getSecondChild()->getShortInt();
+          oldConst2 = secondChild->getShortInt();
+          signedMax = TR::getMaxSigned<TR::Int16>();
+          signedMin = TR::getMinSigned<TR::Int16>();
+	  break;
+       case TR::Int32:
+	  oldConst1 = opNode->getSecondChild()->getInt();
+          oldConst2 = secondChild->getInt();
+          signedMax = TR::getMaxSigned<TR::Int32>();
+          signedMin = TR::getMinSigned<TR::Int32>();
+	  break;
+       case TR::Int64:
+	  oldConst1 = opNode->getSecondChild()->getLongInt();
+          oldConst2 = secondChild->getLongInt();
+          signedMax = TR::getMaxSigned<TR::Int64>();
+          signedMin = TR::getMinSigned<TR::Int64>();
+	  break;
+       default:
+	 if (s->trace())
+          traceMsg(s->comp(),
+                   "\nEliminating add/sub under compare node n%dn failed due to opcode data type\n",
+                   node->getGlobalIndex());
+	 TR_ASSERT_FATAL(false, "\nEliminating add/sub under compare node n%dn failed due to opcode data type\n" );
+
+	 break;
+       }
+       //overflow handling:
+       //Must detect overflow without causing overflow
+       //Assuming oldConst1+oldConst2>signedMax --> resulting in overflow,
+       //We can identify such overflow from 
+       //oldConst2>signedMax-oldConst1 without causing overflow in the calculation itself
+       bool canTransformAdd = isAddOp
+               && !(oldConst1 > 0 && (oldConst2 < signedMin + oldConst1))
+               && !(oldConst1 < 0 && (oldConst2 > signedMax + oldConst1));
+       bool canTransformSub = isSubOp
+               && !(oldConst1 > 0 && (oldConst2 > signedMax - oldConst1))
+               && !(oldConst1 < 0 && (oldConst2 < signedMin - oldConst1));
+
+       if(cannotTransformOp( canTransformAdd, canTransformSub, node, s)==NULL)
+          return NULL;
+	
+       	
+       int64_t newConst = 0;
+       newConst = isAddOp ? (oldConst2 - oldConst1) : (oldConst2 + oldConst1);
+       newConstNode->setLongInt(newConst);
+     }
+   return newConstNode;
+   }
 /**
  * \brief
  *
@@ -12867,37 +12992,6 @@ TR::Node *su2dSimplifier(TR::Node * node, TR::Block * block, TR::Simplifier * s)
  * The newConst calculation should not produce overflow or underflow.
  * \endverbatim
  *
- * Also note that for unsigned comparison types other than equality and inequality,
- * add/sub simplifications are not possible due to how values are interpreted
- * in the current IL nodes. Essentially, the value of an iconst node is neither
- * signed nor unsigned; and its parent is free to interpret its value.
- *
- * For example, the following transformation is incorrect:
- *
- * \varbatim
- *
- * Before:
- *
- * ifiucmplt --> goto ...
- *     isub (cannotOverflow)
- *         iload x
- *         iconst -1
- *     iconst 100
- *
- * After:
- *
- * ifiucmplt --> goto ...
- *     iload x
- *     iconst 99
- *
- * \endverbatim
- *
- * If x were -1, the first tree would evaluate to true since it's comparing if zero is less than 100.
- * But in the second tree, ifiucmplt interprets the value of x as UINT_MAX. Thus,
- * the second tree is comparing UINT_MAX with 99; and the whole comparison node evalutes
- * to false.
- *
- * Unsigned equality and inequality comparisons are not sensitive to sign interpretation problems.
  *
  * \param node          the comparison node being simpilfied
  * \param s             the simplifier object
@@ -12920,109 +13014,29 @@ TR::Node* removeArithmeticsUnderIntegralCompare(TR::Node* node,
    bool isSubOp = (op == TR::isub || op == TR::lsub || op == TR::ssub || op == TR::bsub);
 
    bool isUnsignedCompare = node->getOpCode().isUnsignedCompare();
-   bool isEqOrNotEqCompare = node->getOpCode().isCompareForEquality();
-
-   bool isSignednessTypeSupported = isEqOrNotEqCompare || (!isUnsignedCompare && opNode->cannotOverflow());
-
+   bool isCompareOp = node->getOpCode().isBooleanCompare();
+   bool isSignednessTypeSupported = isCompareOp && opNode->cannotOverflow(); 
    if ((isAddOp || isSubOp)
-         && isSignednessTypeSupported
-         && opNode->getSecondChild()->getOpCode().isLoadConst()
-         && secondChild->getOpCode().isLoadConst()
-         // Only perform the simplification on the first occurance of the add/sub node
-         && (opNode->getFutureUseCount() == opNode->getReferenceCount() - 1))
-      {
-      int64_t signedMax = 0, signedMin = 0;
-      uint64_t oldUConst1 = 0, oldUConst2 = 0, newUConst = 0;
-
-      if (opNode->getOpCode().is1Byte())
-         {
-         oldUConst1 = opNode->getSecondChild()->getUnsignedByte();
-         oldUConst2 = secondChild->getUnsignedByte();
-
-         signedMax = TR::getMaxSigned<TR::Int8>();
-         signedMin = TR::getMinSigned<TR::Int8>();
-         }
-      else if (opNode->getOpCode().is2Byte())
-         {
-         oldUConst1 = opNode->getSecondChild()->getUnsignedShortInt();
-         oldUConst2 = secondChild->getUnsignedShortInt();
-
-         signedMax = TR::getMaxSigned<TR::Int16>();
-         signedMin = TR::getMinSigned<TR::Int16>();
-         }
-      else if (opNode->getOpCode().is4Byte())
-         {
-         oldUConst1 = opNode->getSecondChild()->getUnsignedInt();
-         oldUConst2 = secondChild->getUnsignedInt();
-
-         signedMax = TR::getMaxSigned<TR::Int32>();
-         signedMin = TR::getMinSigned<TR::Int32>();
-         }
-      else if (opNode->getOpCode().is8Byte())
-         {
-         oldUConst1 = opNode->getSecondChild()->getUnsignedLongInt();
-         oldUConst2 = secondChild->getUnsignedLongInt();
-
-         signedMax = TR::getMaxSigned<TR::Int64>();
-         signedMin = TR::getMinSigned<TR::Int64>();
-         }
-      else
-         {
-         if (s->trace())
-            traceMsg(s->comp(),
-                     "\nEliminating add/sub under compare node n%dn failed due to opcode data type\n",
-                     node->getGlobalIndex());
-
-         return node;
-         }
-
-      if (!isEqOrNotEqCompare)
-         {
-         // check for signed overflow
-         // Signed integer overflow is undefined behavior in C++11; and unsigned
-         // arithmnetic operations are defined. Need to make sure that signed integer results don't overflow.
-         int64_t oldConst1 = static_cast<int64_t>(oldUConst1);
-         int64_t oldConst2 = static_cast<int64_t>(oldUConst2);
-
-         bool canTransformAdd = isAddOp
-                 && !(oldConst1 > 0 && (oldConst2 < signedMin + oldConst1))
-                 && !(oldConst1 < 0 && (oldConst2 > signedMax + oldConst1));
-
-         bool canTransformSub = isSubOp
-                     && !(oldConst1 > 0 && (oldConst2 > signedMax - oldConst1))
-                     && !(oldConst1 < 0 && (oldConst2 < signedMin - oldConst1));
-
-         if (!(canTransformAdd || canTransformSub))
-            {
-            if (s->trace())
-               traceMsg(s->comp(),
-                        "\nEliminating add/sub under order compare node n%dn failed due to overflow\n",
-                        node->getGlobalIndex());
-
-            return node;
-            }
-         }
-
-      // Calculate new constant value.
-      // For both signed and unsigned comparisons, the new values are calculated using
-      // the old unsigned values. The reason being that signed integer overflow is undefined behavior in
-      // C++, and that unsigned integer overflow is defined behavior: they shall obey the laws of
-      // arithmetic modulo 2^n and produce wrapped values
-      // The IL expects integer wrapping in case of overflow; and this matches unsigned integer behaviors in C++.
-      newUConst = isAddOp ? (oldUConst2 - oldUConst1) : (oldUConst2 + oldUConst1);
+		   && isSignednessTypeSupported
+		   && opNode->getSecondChild()->getOpCode().isLoadConst()
+		   && secondChild->getOpCode().isLoadConst()
+		   // Only perform the simplification on the first occurance of the add/sub node
+		   && (opNode->getFutureUseCount() == opNode->getReferenceCount() - 1))
+   {
+	
+      TR::Node* newConstNode = signedAndUnsignedHandler(opNode,secondChild,s, node,!isUnsignedCompare, isAddOp, isSubOp);    
 
       // Done checking constant values. Transform the tree.
-      if (performTransformation(s->comp(),
-                                "%sEliminating add/sub operation under integer comparison node n%dn %s\n",
-                                s->optDetailString(),
-                                node->getGlobalIndex(),
-                                node->getOpCode().getName()))
+      if (newConstNode!= NULL 
+          && performTransformation(s->comp(),
+		                   "%sEliminating add/sub operation under integer comparison node n%dn %s\n",
+             			   s->optDetailString(),
+             			   node->getGlobalIndex(),
+              			   node->getOpCode().getName()))
          {
          // It's not recommended to mutate the value of an existing constant node by
          // calling constNode->setConstValue()
          // Hence, creating a new node here and copy the old node's internal info.
-         TR::Node* newConstNode = TR::Node::create(secondChild, secondChild->getOpCodeValue(), 0);
-         newConstNode->setUnsignedLongInt(newUConst);
          node->setAndIncChild(0, opNode->getFirstChild());
          node->setAndIncChild(1, newConstNode);
 
@@ -13030,7 +13044,6 @@ TR::Node* removeArithmeticsUnderIntegralCompare(TR::Node* node,
          opNode->recursivelyDecReferenceCount();
          }
       }
-
    return node;
    }
 
