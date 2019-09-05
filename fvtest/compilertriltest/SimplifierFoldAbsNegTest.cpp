@@ -58,14 +58,14 @@ template <> std::vector<int64_t> dataForType<int64_t>()
 
 template <> std::vector<float> dataForType<float>()
    {
-   static float values[] = { 0, 1, 2, -1, -2, 3.14F, -3.14F, std::numeric_limits<float>::min(), std::numeric_limits<float>::min() };
+   static float values[] = { 0, 1, 2, -1, -2, 3.14F, -3.14F, std::numeric_limits<float>::max(), std::numeric_limits<float>::min() };
 
    return std::vector<float>(values, values + sizeof(values) / sizeof(float));
    }
 
 template <> std::vector<double> dataForType<double>()
    {
-   static double values[] = { 0, 1, 2, -1, -2, 3.14F, -3.14F, std::numeric_limits<double>::min(), std::numeric_limits<double>::min() };
+   static double values[] = { 0, 1, 2, -1, -2, 3.14F, -3.14F, std::numeric_limits<double>::max(), std::numeric_limits<double>::min() };
 
    return std::vector<double>(values, values + sizeof(values) / sizeof(double));
    }
